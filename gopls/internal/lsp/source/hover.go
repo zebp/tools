@@ -91,6 +91,18 @@ func Hover(ctx context.Context, snapshot Snapshot, fh FileHandle, position proto
 	if err != nil {
 		return nil, err
 	}
+
+	typ := ident.Type
+	loc, err := typ.Span()
+
+	if err == nil {
+		hover = fmt.Sprintf(
+			`%s
+---
+Go to: [%s](command:go.gotoLocation?file=%s&loc=%s)
+			`, hover, typ.Object.Type().String(), loc.URI().Filename(), loc.Start())
+	}
+
 	return &protocol.Hover{
 		Contents: protocol.MarkupContent{
 			Kind:  snapshot.View().Options().PreferredContentFormat,
