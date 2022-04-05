@@ -15,6 +15,7 @@ import (
 	"go/format"
 	"go/token"
 	"go/types"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -96,11 +97,38 @@ func Hover(ctx context.Context, snapshot Snapshot, fh FileHandle, position proto
 	loc, err := typ.Span()
 
 	if err == nil {
-		hover = fmt.Sprintf(
-			`%s
----
-Go to: [%s](command:go.gotoLocation?file=%s&loc=%s)
-			`, hover, typ.Object.Type().String(), loc.URI().Filename(), loc.Start())
+		type params struct {
+			Filename string         `json:"filename"`
+			Range    protocol.Range `json:"range"`
+		}
+
+		start := loc.Start()
+		end := loc.End()
+		serializedParams, _ := json.Marshal(params{
+			Filename: loc.URI().Filename(),
+			Range: protocol.Range{
+				Start: protocol.Position{
+					Line:      uint32(start.Line()),
+					Character: uint32(start.Column()),
+				},
+				End: protocol.Position{
+					Line:      uint32(end.Line()),
+					Character: uint32(end.Column()),
+				},
+			},
+		})
+
+		hover = strings.Join(
+			[]string{
+				hover,
+				"---",
+				fmt.Sprintf(
+					"Go to: [%s](command:go.gotoLocation?%s)",
+					typ.Object.Type().String(),
+					url.PathEscape(string(serializedParams)),
+				),
+			},
+			"\n")
 	}
 
 	return &protocol.Hover{
