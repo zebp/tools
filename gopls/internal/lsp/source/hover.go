@@ -23,10 +23,10 @@ import (
 
 	"golang.org/x/text/unicode/runenames"
 	"golang.org/x/tools/go/types/typeutil"
-	"golang.org/x/tools/internal/event"
-	"golang.org/x/tools/internal/bug"
 	"golang.org/x/tools/gopls/internal/lsp/protocol"
 	"golang.org/x/tools/gopls/internal/lsp/safetoken"
+	"golang.org/x/tools/internal/bug"
+	"golang.org/x/tools/internal/event"
 	"golang.org/x/tools/internal/typeparams"
 )
 
@@ -97,38 +97,41 @@ func Hover(ctx context.Context, snapshot Snapshot, fh FileHandle, position proto
 	loc, err := typ.Span()
 
 	if err == nil {
-		type params struct {
-			Filename string         `json:"filename"`
-			Range    protocol.Range `json:"range"`
+		if named, ok := typ.Object.Type().(*types.Named); ok {
+			type params struct {
+				Filename string         `json:"filename"`
+				Range    protocol.Range `json:"range"`
+			}
+
+			start := loc.Start()
+			end := loc.End()
+			serializedParams, _ := json.Marshal(params{
+				Filename: loc.URI().Filename(),
+				Range: protocol.Range{
+					Start: protocol.Position{
+						Line:      uint32(start.Line()),
+						Character: uint32(start.Column()),
+					},
+					End: protocol.Position{
+						Line:      uint32(end.Line()),
+						Character: uint32(end.Column()),
+					},
+				},
+			})
+
+			hover = strings.Join(
+				[]string{
+					hover,
+					"---",
+					fmt.Sprintf(
+						"Go to [%s](command:go.gotoLocation?%s)",
+						named.Obj().Name(),
+						url.PathEscape(string(serializedParams)),
+					),
+				},
+				"\n")
 		}
 
-		start := loc.Start()
-		end := loc.End()
-		serializedParams, _ := json.Marshal(params{
-			Filename: loc.URI().Filename(),
-			Range: protocol.Range{
-				Start: protocol.Position{
-					Line:      uint32(start.Line()),
-					Character: uint32(start.Column()),
-				},
-				End: protocol.Position{
-					Line:      uint32(end.Line()),
-					Character: uint32(end.Column()),
-				},
-			},
-		})
-
-		hover = strings.Join(
-			[]string{
-				hover,
-				"---",
-				fmt.Sprintf(
-					"Go to: [%s](command:go.gotoLocation?%s)",
-					typ.Object.Type().String(),
-					url.PathEscape(string(serializedParams)),
-				),
-			},
-			"\n")
 	}
 
 	return &protocol.Hover{
