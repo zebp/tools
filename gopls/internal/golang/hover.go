@@ -16,6 +16,7 @@ import (
 	"go/token"
 	"go/types"
 	"io/fs"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -90,6 +91,15 @@ type hoverJSON struct {
 	// fields of a (struct) type that were promoted through an
 	// embedded field.
 	promotedFields string
+
+	// namedLocations is the list of locations where a named type
+	// is defined.
+	namedLocations []namedLocation
+}
+
+type namedLocation struct {
+	Name     string
+	Location protocol.Location
 }
 
 // Hover implements the "textDocument/hover" RPC for Go files.
@@ -233,6 +243,17 @@ func hover(ctx context.Context, snapshot *cache.Snapshot, fh file.Handle, pp pro
 	// By default, types.ObjectString provides a reasonable signature.
 	signature := objectString(obj, qf, declPos, declPGF.Tok, spec)
 	singleLineSignature := signature
+
+	var namedLocations []namedLocation
+
+	if vr, ok := obj.(*types.Var); ok {
+		if named, ok := vr.Type().(*types.Named); ok {
+			namedLocations, err = namedDefinitionsInNamedType(ctx, named, pkg.FileSet(), snapshot)
+			if err != nil {
+				return protocol.Range{}, nil, err
+			}
+		}
+	}
 
 	// TODO(rfindley): we could do much better for inferred signatures.
 	if inferred := inferredSignature(pkg.GetTypesInfo(), ident); inferred != nil {
@@ -463,6 +484,7 @@ func hover(ctx context.Context, snapshot *cache.Snapshot, fh file.Handle, pp pro
 		typeDecl:          typeDecl,
 		methods:           methods,
 		promotedFields:    fields,
+		namedLocations:    namedLocations,
 	}, nil
 }
 
@@ -1022,6 +1044,7 @@ func formatHover(h *hoverJSON, options *settings.Options) (string, error) {
 			maybeMarkdown(h.promotedFields),
 			maybeMarkdown(h.methods),
 			formatLink(h, options),
+			formatNamedLocations(h, options),
 		}
 		if h.typeDecl != "" {
 			parts[0] = "" // type: suppress redundant Signature
@@ -1073,6 +1096,34 @@ func formatDoc(h *hoverJSON, options *settings.Options) string {
 		return CommentToMarkdown(doc, options)
 	}
 	return doc
+}
+
+func formatNamedLocations(h *hoverJSON, options *settings.Options) string {
+	type params struct {
+		Filename string            `json:"filename"`
+		Position protocol.Position `json:"position"`
+	}
+
+	if options.PreferredContentFormat == protocol.Markdown && len(h.namedLocations) > 0 {
+		part := "Go to: "
+
+		for _, namedLoc := range h.namedLocations {
+			serializedParams, _ := json.Marshal(params{
+				Filename: namedLoc.Location.URI.Path(),
+				Position: namedLoc.Location.Range.Start,
+			})
+
+			part += fmt.Sprintf(
+				"[%s](command:go.goto.location?%s), ",
+				namedLoc.Name,
+				url.PathEscape(string(serializedParams)),
+			)
+		}
+
+		return strings.TrimSuffix(part, ", ")
+	} else {
+		return ""
+	}
 }
 
 // findDeclInfo returns the syntax nodes involved in the declaration of the
@@ -1271,4 +1322,50 @@ func promotedFields(t types.Type, from *types.Package) []promotedField {
 
 func accessibleTo(obj types.Object, pkg *types.Package) bool {
 	return obj.Exported() || obj.Pkg() == pkg
+}
+
+func namedDefinitionsInNamedType(
+	ctx context.Context,
+	ty *types.Named,
+	fset *token.FileSet,
+	snapshot *cache.Snapshot,
+) ([]namedLocation, error) {
+	locations := []namedLocation{}
+
+	obj := ty.Obj()
+	location, err := mapPosition(ctx, fset, snapshot, obj.Pos(), adjustedObjEnd(obj))
+	if err != nil {
+		return nil, err
+	}
+
+	locations = append(locations, namedLocation{
+		Name:     obj.Name(),
+		Location: location,
+	})
+
+	for i := 0; i < ty.TypeArgs().Len(); i++ {
+		ty := ty.TypeArgs().At(i)
+
+		var obj *types.TypeName
+
+		if named, ok := ty.(*types.Named); ok {
+			obj = named.Obj()
+		} else if typeParam, ok := ty.(*types.TypeParam); ok {
+			obj = typeParam.Obj()
+		} else {
+			continue
+		}
+
+		location, err := mapPosition(ctx, fset, snapshot, obj.Pos(), adjustedObjEnd(obj))
+		if err != nil {
+			return nil, err
+		}
+
+		locations = append(locations, namedLocation{
+			Name:     obj.Name(),
+			Location: location,
+		})
+	}
+
+	return locations, nil
 }

@@ -113,6 +113,43 @@ func main() {
 	})
 }
 
+func TestHoverIdentifier(t *testing.T) {
+	const source = `
+-- go.mod --
+module mod.com
+-- structs/example.go --
+package structs
+
+type Sample struct {}
+
+type Example[Foo any, Bar any, Baz any] struct {
+	First Foo
+	Second Bar
+	Third Baz
+}
+-- main.go --
+package main
+
+import "mod.com/structs"
+
+func test[Bar any](value Bar) {
+	ex := structs.Example[int, Bar, structs.Sample]{
+		First: 1,
+		Second: value,
+		Third: structs.Sample{},
+	}
+}
+`
+	Run(t, source, func(t *testing.T, env *Env) {
+		env.OpenFile("main.go")
+		expectedExample := "[Example](command:go.gotoLocation"
+		got, _ := env.Hover(env.RegexpSearch("main.go", "ex"))
+		if got != nil && !strings.Contains(got.Value, expectedExample) {
+			t.Errorf("Hover: missing expected hover location '%s'. Got:\n%q", expectedExample, got.Value)
+		}
+	})
+}
+
 // Tests that hovering does not trigger the panic in golang/go#48249.
 func TestPanicInHoverBrokenCode(t *testing.T) {
 	// Note: this test can not be expressed as a marker test, as it must use
